@@ -1173,6 +1173,11 @@ class LabApp(ctk.CTk):
         self.title("Lab Inventory Management System")
         self.geometry("1400x900")  # Increased size for better dashboard layout
         # To change window size: modify the string above (width x height)
+
+        try:
+            self.iconbitmap("icon.ico")
+        except:
+            pass
         
         # ============================================================
         # CONFIG ZONE: Premium SaaS Design System - Zinc Monochrome Palette
