@@ -1212,6 +1212,7 @@ class LabApp(ctk.CTk):
         #   SUPABASE_URL=your_project_url_here
         #   SUPABASE_KEY=your_anon_key_here
         # Option 3: Hardcode them below (NOT RECOMMENDED for production)
+        # =============================================================
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
         # If you want to hardcode (for testing only), uncomment below:
