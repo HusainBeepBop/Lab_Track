@@ -1213,6 +1213,10 @@ class LabApp(ctk.CTk):
         # supabase_url = "your_url_here"
         # supabase_key = "your_key_here"
         
+        # Store credentials for sync functionality
+        self.supabase_url = supabase_url
+        self.supabase_key = supabase_key
+        
         self.db = DatabaseManager(supabase_url, supabase_key)
         
         # Cart for issue items (stores items before finalizing transaction)
@@ -1257,7 +1261,7 @@ class LabApp(ctk.CTk):
             border_width=0
         )
         header_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
-        header_frame.grid_columnconfigure(1, weight=1)  # Push staff selector to right
+        header_frame.grid_columnconfigure(1, weight=1)  # Push sync button and staff selector to right
         header_frame.grid_propagate(False)  # Maintain fixed height
         
         # Staff selector on the right
@@ -1268,6 +1272,21 @@ class LabApp(ctk.CTk):
             text_color=self.colors["text_secondary"]
         )
         staff_label.grid(row=0, column=0, padx=(20, 10), pady=15, sticky="e")
+        
+        # Sync button - refreshes data from Supabase
+        sync_btn = ctk.CTkButton(
+            header_frame,
+            text="🔄 Sync",
+            command=self._sync_data,
+            width=100,
+            height=36,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=self.colors["status_issued"],
+            hover_color="#2563eb",
+            text_color="#ffffff",
+            corner_radius=8
+        )
+        sync_btn.grid(row=0, column=1, padx=(0, 12), pady=15, sticky="e")
         
         # Global staff dropdown - accessible from anywhere
         self.global_issuer_dropdown = ctk.CTkComboBox(
@@ -1280,7 +1299,7 @@ class LabApp(ctk.CTk):
             text_color=self.colors["text_primary"],
             command=self._on_issuer_changed
         )
-        self.global_issuer_dropdown.grid(row=0, column=1, padx=(0, 20), pady=15, sticky="e")
+        self.global_issuer_dropdown.grid(row=0, column=2, padx=(0, 20), pady=15, sticky="e")
         self._load_global_staff()  # Populate on startup
         
         # ============================================================
@@ -3072,6 +3091,41 @@ class LabApp(ctk.CTk):
                 if hasattr(self, 'issuer_dropdown'):
                     self.issuer_dropdown.set(value)
                 break
+    
+    def _sync_data(self):
+        """
+        Sync data from Supabase - refreshes all data and reloads current view.
+        
+        This method:
+        1. Reconnects to Supabase using stored credentials
+        2. Refreshes all data from the database
+        3. Reloads the current view to show updated data
+        4. Shows a success/error message
+        """
+        # Get credentials from stored values or environment
+        supabase_url = getattr(self, 'supabase_url', None) or os.getenv("SUPABASE_URL")
+        supabase_key = getattr(self, 'supabase_key', None) or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+        
+        # Try to reconnect to Supabase
+        try:
+            # Reinitialize database manager with current credentials
+            # This will reconnect if Supabase is available
+            self.db = DatabaseManager(supabase_url, supabase_key)
+            
+            # Reload global staff dropdown
+            self._load_global_staff()
+            
+            # Refresh the current view to show updated data
+            current_view = self.current_view
+            self._switch_view(current_view)
+            
+            # Show success message
+            if not self.db.use_mock:
+                self._show_success("Data synced successfully from Supabase!")
+            else:
+                self._show_error("Not connected to Supabase. Using mock data.", "Sync Warning")
+        except Exception as e:
+            self._show_error(f"Error syncing data: {str(e)}", "Sync Error")
     
     def _add_to_cart(self):
         """
