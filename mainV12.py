@@ -7,6 +7,19 @@ This version features:
 - Dashboard view with summary cards and data visualization
 - Card-based UI design with dark theme
 - Comprehensive educational comments for learning
+
+================================================================================
+DATABASE SCHEMA UPDATE REQUIRED
+================================================================================
+To support transaction backdating and due dates, run the following SQL command
+in your Supabase SQL editor:
+
+ALTER TABLE transactions 
+ADD COLUMN IF NOT EXISTS expected_return_date DATE;
+
+This adds the expected_return_date column to the transactions table, allowing
+the application to store custom due dates for issued items.
+================================================================================
 """
 
 import customtkinter as ctk
@@ -271,19 +284,27 @@ class DatabaseManager:
                 print(f"Error fetching staff: {e}")
                 return []
     
-    def create_transaction(self, student_id: int, item_ids: List[int], issuer_id: Optional[int] = None) -> Optional[int]:
+    def create_transaction(self, student_id: int, item_ids: List[int], issuer_id: Optional[int] = None, 
+                          custom_issue_date: Optional[str] = None, expected_return_date: Optional[str] = None) -> Optional[int]:
         """
         Create a transaction and transaction items.
         
         Stores issue_date (created_at) for overdue tracking.
         Also tracks who issued the items (issuer_id).
+        Supports custom issue dates and expected return dates for backdating.
         
         Args:
             student_id: ID of the student receiving items
             item_ids: List of item IDs to issue
             issuer_id: Optional ID of the staff member issuing the items
+            custom_issue_date: Optional custom issue date (ISO format string, e.g., "2024-01-15")
+            expected_return_date: Optional expected return date (ISO format string, e.g., "2024-01-22")
         """
         current_time = datetime.now()
+        
+        # Use custom issue date if provided, otherwise use current time
+        issue_date_str = custom_issue_date if custom_issue_date else current_time.isoformat()
+        
         if self.use_mock:
             transaction_id = len(self.mock_transactions) + 1
             transaction_data = {
@@ -291,10 +312,12 @@ class DatabaseManager:
                 "student_id": student_id,
                 "status": "Active",
                 "created_at": current_time.isoformat(),
-                "issue_date": current_time.isoformat()  # Store for overdue tracking
+                "issue_date": issue_date_str  # Use custom date if provided
             }
             if issuer_id:
                 transaction_data["issuer_id"] = issuer_id
+            if expected_return_date:
+                transaction_data["expected_return_date"] = expected_return_date
             
             self.mock_transactions.append(transaction_data)
             
@@ -314,15 +337,16 @@ class DatabaseManager:
         else:
             try:
                 # Create transaction with issue_date for overdue tracking
-                current_time = datetime.now()
                 transaction_data = {
                     "student_id": student_id,
                     "status": "Active",
                     "created_at": current_time.isoformat(),
-                    "issue_date": current_time.isoformat()  # Store for overdue tracking
+                    "issue_date": issue_date_str  # Use custom date if provided
                 }
                 if issuer_id:
                     transaction_data["issuer_id"] = issuer_id
+                if expected_return_date:
+                    transaction_data["expected_return_date"] = expected_return_date
                 
                 trans_result = self.client.table('transactions').insert(transaction_data).execute()
                 
@@ -1059,6 +1083,132 @@ class DatabaseManager:
                 return (inventory_created, items_created)
         
         return (inventory_created, items_created)
+    
+    def restock_inventory(self, inventory_id: int, quantity: int, manual_serials: Optional[List[str]] = None) -> bool:
+        """
+        Restock an existing inventory component by adding new items.
+        
+        Power User Feature: Supports both auto-generated and manual serial numbers.
+        
+        Args:
+            inventory_id: ID of the inventory component to restock
+            quantity: Number of items to add
+            manual_serials: Optional list of manual serial numbers (must match quantity)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.use_mock:
+            # Get inventory to find component name for serial generation
+            inventory = next((inv for inv in self.mock_inventory if inv["id"] == inventory_id), None)
+            if not inventory:
+                return False
+            
+            component_name = inventory["name"]
+            
+            # Generate serial numbers
+            if manual_serials:
+                # Use provided serials
+                serials = manual_serials
+            else:
+                # Auto-generate serials using same algorithm as bulk_import
+                prefix = component_name[:3].upper().replace(' ', '')
+                if len(prefix) < 3:
+                    prefix = prefix.ljust(3, 'X')
+                
+                # Find highest existing serial
+                max_num = 0
+                for item in self.mock_items:
+                    if item.get("inventory_id") == inventory_id:
+                        serial = item.get("serial_number", "")
+                        if serial.startswith(prefix):
+                            try:
+                                num = int(serial[len(prefix):])
+                                max_num = max(max_num, num)
+                            except:
+                                pass
+                
+                # Generate sequential serials
+                serials = [f"{prefix}{max_num + i + 1:03d}" for i in range(quantity)]
+            
+            # Add items
+            for serial in serials:
+                self.mock_items.append({
+                    "id": len(self.mock_items) + 1,
+                    "serial_number": serial,
+                    "status": "Available",
+                    "inventory_id": inventory_id
+                })
+            
+            # Update total quantity
+            inventory["total_qty"] += quantity
+            
+            return True
+        else:
+            try:
+                # Get inventory to find component name for serial generation
+                inventory_result = self.client.table('inventory').select('name').eq('id', inventory_id).execute()
+                if not inventory_result.data:
+                    return False
+                
+                component_name = inventory_result.data[0]["name"]
+                
+                # Generate serial numbers
+                if manual_serials:
+                    # Use provided serials
+                    serials = manual_serials
+                else:
+                    # Auto-generate serials using same algorithm as bulk_import
+                    prefix = component_name[:3].upper().replace(' ', '')
+                    if len(prefix) < 3:
+                        prefix = prefix.ljust(3, 'X')
+                    
+                    # Find highest existing serial
+                    existing_items = self.client.table('items').select('serial_number').eq(
+                        'inventory_id', inventory_id
+                    ).execute()
+                    
+                    max_num = 0
+                    for item in existing_items.data:
+                        serial = item.get('serial_number', '')
+                        if serial.startswith(prefix):
+                            try:
+                                num = int(serial[len(prefix):])
+                                max_num = max(max_num, num)
+                            except:
+                                pass
+                    
+                    # Generate sequential serials
+                    serials = [f"{prefix}{max_num + i + 1:03d}" for i in range(quantity)]
+                
+                # Prepare items for bulk insert
+                items_to_insert = []
+                for serial in serials:
+                    items_to_insert.append({
+                        'serial_number': serial,
+                        'status': 'Available',
+                        'inventory_id': inventory_id
+                    })
+                
+                # Insert in batches (Supabase has limits)
+                batch_size = 100
+                for i in range(0, len(items_to_insert), batch_size):
+                    batch = items_to_insert[i:i + batch_size]
+                    self.client.table('items').insert(batch).execute()
+                
+                # Update total quantity
+                # Get current total_qty
+                current_inv = self.client.table('inventory').select('total_qty').eq('id', inventory_id).execute()
+                current_qty = current_inv.data[0].get('total_qty', 0) if current_inv.data else 0
+                
+                self.client.table('inventory').update({
+                    'total_qty': current_qty + quantity
+                }).eq('id', inventory_id).execute()
+                
+                return True
+            except Exception as e:
+                print(f"Error restocking inventory: {e}")
+                return False
 
 
 class ComponentSelectionPopup(ctk.CTkToplevel):
@@ -2200,8 +2350,80 @@ class LabApp(ctk.CTk):
             border_color=self.colors["border"],
             text_color=self.colors["text_primary"]
         )
-        self.student_dropdown.pack(pady=(0, 30), padx=30, fill="x", anchor="w")
+        self.student_dropdown.pack(pady=(0, 12), padx=30, fill="x", anchor="w")
         self._load_students()
+        
+        # ============================================================
+        # TRANSACTION DATES CARD - Power User Feature (Backdating)
+        # ============================================================
+        dates_card = ctk.CTkFrame(
+            scroll_frame, 
+            corner_radius=12,
+            fg_color=self.colors["bg_secondary"],
+            border_width=1,
+            border_color=self.colors["border"]
+        )
+        dates_card.pack(pady=20, padx=0, fill="x")
+        
+        dates_label = ctk.CTkLabel(
+            dates_card,
+            text="Transaction Dates (Optional - for backdating):",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=self.colors["text_primary"]
+        )
+        dates_label.pack(pady=(30, 12), padx=30, anchor="w")
+        
+        # Date inputs container
+        dates_container = ctk.CTkFrame(dates_card, fg_color="transparent")
+        dates_container.pack(pady=(0, 30), padx=30, fill="x")
+        
+        # Issue Date
+        issue_date_label = ctk.CTkLabel(
+            dates_container,
+            text="Issue Date:",
+            font=ctk.CTkFont(size=14),
+            text_color=self.colors["text_primary"]
+        )
+        issue_date_label.grid(row=0, column=0, padx=(0, 10), pady=10, sticky="w")
+        
+        # Default to today's date
+        default_issue_date = datetime.now().strftime("%Y-%m-%d")
+        self.issue_date_entry = ctk.CTkEntry(
+            dates_container,
+            placeholder_text="YYYY-MM-DD",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color=self.colors["bg_primary"],
+            border_color=self.colors["border"],
+            text_color=self.colors["text_primary"]
+        )
+        self.issue_date_entry.insert(0, default_issue_date)
+        self.issue_date_entry.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+        
+        # Due Date
+        due_date_label = ctk.CTkLabel(
+            dates_container,
+            text="Due Date:",
+            font=ctk.CTkFont(size=14),
+            text_color=self.colors["text_primary"]
+        )
+        due_date_label.grid(row=0, column=2, padx=(20, 10), pady=10, sticky="w")
+        
+        # Default to today + 7 days
+        default_due_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        self.due_date_entry = ctk.CTkEntry(
+            dates_container,
+            placeholder_text="YYYY-MM-DD",
+            width=200,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color=self.colors["bg_primary"],
+            border_color=self.colors["border"],
+            text_color=self.colors["text_primary"]
+        )
+        self.due_date_entry.insert(0, default_due_date)
+        self.due_date_entry.grid(row=0, column=3, padx=10, pady=10, sticky="w")
         
         # ============================================================
         # INPUT SECTION CARD - Premium Zinc Design
@@ -3155,6 +3377,237 @@ class LabApp(ctk.CTk):
         # Refresh the inventory view to show new component
         self._switch_view("inventory")
     
+    def _show_restock_popup(self, inventory_id: int, component_name: str):
+        """
+        Show Rapid Restock popup for adding items to existing inventory.
+        
+        Power User Feature: Allows quick restocking with optional manual serial entry.
+        
+        Args:
+            inventory_id: ID of the inventory component to restock
+            component_name: Name of the component (for display)
+        """
+        # Create popup window
+        popup = ctk.CTkToplevel(self)
+        popup.title(f"Restock {component_name}")
+        popup.geometry("600x650")
+        popup.configure(bg=self.colors["bg_primary"])
+        popup.transient(self)
+        popup.grab_set()
+        
+        # Main frame
+        main_frame = ctk.CTkFrame(
+            popup,
+            fg_color=self.colors["bg_secondary"],
+            corner_radius=12,
+            border_width=1,
+            border_color=self.colors["border"]
+        )
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Title
+        title = ctk.CTkLabel(
+            main_frame,
+            text=f"Restock {component_name}",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=self.colors["text_primary"]
+        )
+        title.pack(pady=(30, 20))
+        
+        # Scrollable form container
+        form_scroll = ctk.CTkScrollableFrame(main_frame, fg_color="transparent")
+        form_scroll.pack(fill="both", expand=True, padx=30, pady=(0, 20))
+        
+        # Quantity input
+        qty_label = ctk.CTkLabel(
+            form_scroll,
+            text="Quantity to Add *",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=self.colors["text_primary"],
+            anchor="w"
+        )
+        qty_label.pack(anchor="w", pady=(15, 5), padx=10)
+        
+        qty_entry = ctk.CTkEntry(
+            form_scroll,
+            placeholder_text="Enter quantity...",
+            height=40,
+            font=ctk.CTkFont(size=13),
+            fg_color=self.colors["bg_primary"],
+            border_color=self.colors["border"],
+            text_color=self.colors["text_primary"]
+        )
+        qty_entry.pack(fill="x", pady=(0, 20), padx=10)
+        
+        # Manual Serial Entry Toggle
+        manual_serial_var = ctk.BooleanVar(value=False)
+        manual_toggle = ctk.CTkSwitch(
+            form_scroll,
+            text="Manual Serial Entry",
+            variable=manual_serial_var,
+            font=ctk.CTkFont(size=13),
+            text_color=self.colors["text_primary"]
+        )
+        manual_toggle.pack(anchor="w", pady=(0, 10), padx=10)
+        
+        # Info label (shown when toggle is OFF)
+        info_label = ctk.CTkLabel(
+            form_scroll,
+            text="Serials will be auto-generated (e.g., ARD005, ARD006)",
+            font=ctk.CTkFont(size=11),
+            text_color=self.colors["text_secondary"],
+            anchor="w"
+        )
+        info_label.pack(anchor="w", pady=(0, 10), padx=10)
+        
+        # Serial text area (shown when toggle is ON)
+        serial_textbox = ctk.CTkTextbox(
+            form_scroll,
+            height=200,
+            font=ctk.CTkFont(size=12),
+            fg_color=self.colors["bg_primary"],
+            border_color=self.colors["border"],
+            text_color=self.colors["text_primary"]
+        )
+        serial_textbox.pack(fill="both", expand=True, pady=(0, 10), padx=10)
+        serial_textbox.insert("1.0", "Enter unique serials here, one per line")
+        serial_textbox.configure(state="disabled")  # Initially disabled
+        
+        # Toggle handler
+        def on_toggle():
+            if manual_serial_var.get():
+                info_label.pack_forget()
+                serial_textbox.configure(state="normal")
+                serial_textbox.delete("1.0", "end")
+                serial_textbox.pack(fill="both", expand=True, pady=(0, 10), padx=10)
+            else:
+                serial_textbox.pack_forget()
+                info_label.pack(anchor="w", pady=(0, 10), padx=10)
+                serial_textbox.configure(state="disabled")
+        
+        manual_toggle.configure(command=on_toggle)
+        
+        # Buttons container
+        buttons_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        buttons_frame.pack(fill="x", padx=30, pady=(0, 30))
+        
+        cancel_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Cancel",
+            command=popup.destroy,
+            height=40,
+            font=ctk.CTkFont(size=14),
+            fg_color=self.colors["bg_primary"],
+            text_color=self.colors["text_primary"],
+            border_width=1,
+            border_color=self.colors["border"],
+            hover_color=self.colors["bg_secondary"]
+        )
+        cancel_btn.pack(side="left", padx=(0, 10))
+        
+        def submit_restock():
+            """Handle restock submission."""
+            try:
+                quantity = int(qty_entry.get().strip())
+                if quantity <= 0:
+                    self._show_error("Quantity must be greater than 0.", "Validation Error")
+                    return
+                
+                manual_serials = None
+                if manual_serial_var.get():
+                    # Get serials from textbox
+                    serials_text = serial_textbox.get("1.0", "end-1c").strip()
+                    if not serials_text or serials_text == "Enter unique serials here, one per line":
+                        self._show_error("Please enter serial numbers when manual entry is enabled.", "Validation Error")
+                        return
+                    
+                    # Parse serials (one per line)
+                    manual_serials = [s.strip() for s in serials_text.split("\n") if s.strip()]
+                    
+                    # Validate count matches quantity
+                    if len(manual_serials) != quantity:
+                        self._show_error(
+                            f"Number of serial numbers ({len(manual_serials)}) does not match quantity ({quantity}).\n"
+                            f"Please enter exactly {quantity} serial numbers, one per line.",
+                            "Validation Error"
+                        )
+                        return
+                    
+                    # Check for duplicates
+                    if len(manual_serials) != len(set(manual_serials)):
+                        self._show_error("Duplicate serial numbers found. Each serial must be unique.", "Validation Error")
+                        return
+                
+                # Call restock method
+                result = self.db.restock_inventory(inventory_id, quantity, manual_serials)
+                
+                if result:
+                    # PERFORMANCE: Invalidate cache after data mutation
+                    self._invalidate_cache(["inventory", "items"])
+                    
+                    # Success popup
+                    success_popup = ctk.CTkToplevel(self)
+                    success_popup.title("Success")
+                    success_popup.geometry("500x200")
+                    success_popup.configure(bg=self.colors["bg_primary"])
+                    success_popup.transient(self)
+                    success_popup.grab_set()
+                    
+                    main_frame_success = ctk.CTkFrame(
+                        success_popup,
+                        fg_color=self.colors["bg_secondary"],
+                        corner_radius=12,
+                        border_width=1,
+                        border_color=self.colors["border"]
+                    )
+                    main_frame_success.pack(fill="both", expand=True, padx=20, pady=20)
+                    
+                    label = ctk.CTkLabel(
+                        main_frame_success,
+                        text=f"Successfully restocked {quantity} item(s) for '{component_name}'!",
+                        font=ctk.CTkFont(size=14),
+                        text_color=self.colors["status_available"],
+                        wraplength=430
+                    )
+                    label.pack(pady=40, padx=30)
+                    
+                    btn = ctk.CTkButton(
+                        main_frame_success,
+                        text="OK",
+                        command=lambda: self._close_restock_success(success_popup, popup),
+                        fg_color=self.colors["status_available"],
+                        text_color=self.colors["bg_primary"],
+                        hover_color="#16a34a",
+                        height=40,
+                        font=ctk.CTkFont(size=14, weight="bold")
+                    )
+                    btn.pack(pady=(0, 20))
+                else:
+                    self._show_error("Failed to restock items. Please try again.", "Error")
+            except ValueError:
+                self._show_error("Quantity must be a valid number.", "Validation Error")
+            except Exception as e:
+                self._show_error(f"Error during restock: {str(e)}", "Error")
+        
+        submit_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Restock",
+            command=submit_restock,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color=self.colors["status_available"],
+            text_color=self.colors["bg_primary"],
+            hover_color="#16a34a"
+        )
+        submit_btn.pack(side="right")
+    
+    def _close_restock_success(self, success_popup, form_popup):
+        """Close success popup and form, then refresh inventory view."""
+        success_popup.destroy()
+        form_popup.destroy()
+        # Refresh the inventory view to show updated quantities
+        self._switch_view("inventory")
+    
     def _load_students(self):
         """Load students into dropdown - uses cache for performance."""
         # PERFORMANCE: Check cache first
@@ -3812,9 +4265,39 @@ class LabApp(ctk.CTk):
             self._show_error("Invalid student selection.", "Error")
             return
         
-        # Create transaction with issuer_id (already validated above)
+        # Get custom dates if provided (for backdating feature)
+        custom_issue_date = None
+        expected_return_date = None
+        
+        if hasattr(self, 'issue_date_entry') and self.issue_date_entry.get().strip():
+            issue_date_str = self.issue_date_entry.get().strip()
+            try:
+                # Validate date format (YYYY-MM-DD)
+                datetime.strptime(issue_date_str, "%Y-%m-%d")
+                custom_issue_date = issue_date_str
+            except ValueError:
+                self._show_error("Invalid issue date format. Please use YYYY-MM-DD format.", "Date Error")
+                return
+        
+        if hasattr(self, 'due_date_entry') and self.due_date_entry.get().strip():
+            due_date_str = self.due_date_entry.get().strip()
+            try:
+                # Validate date format (YYYY-MM-DD)
+                datetime.strptime(due_date_str, "%Y-%m-%d")
+                expected_return_date = due_date_str
+            except ValueError:
+                self._show_error("Invalid due date format. Please use YYYY-MM-DD format.", "Date Error")
+                return
+        
+        # Create transaction with issuer_id and custom dates (already validated above)
         item_ids = [item["id"] for item in self.cart_items]
-        transaction_id = self.db.create_transaction(selected_student["id"], item_ids, issuer_id=issuer_id)
+        transaction_id = self.db.create_transaction(
+            selected_student["id"], 
+            item_ids, 
+            issuer_id=issuer_id,
+            custom_issue_date=custom_issue_date,
+            expected_return_date=expected_return_date
+        )
         
         if transaction_id:
             # PERFORMANCE: Invalidate cache after data mutation
@@ -3922,7 +4405,8 @@ class LabApp(ctk.CTk):
         header_card.pack(fill="x", pady=(0, 12), padx=0)
         
         # Column headers: Uppercase, small, secondary color
-        headers = ["Component Name", "Total Quantity", "Available", "Issued", "Damaged"]
+        # Added "Actions" column for Rapid Restock feature
+        headers = ["Component Name", "Total Quantity", "Available", "Issued", "Damaged", "Actions"]
         for i, header in enumerate(headers):
             label = ctk.CTkLabel(
                 header_card,
@@ -4003,6 +4487,21 @@ class LabApp(ctk.CTk):
                 text_color=self.colors["status_damaged"]
             )
             damaged_label.grid(row=0, column=4, padx=30, pady=20, sticky="w")
+            
+            # Rapid Restock button (➕) - Power User Feature
+            restock_btn = ctk.CTkButton(
+                row_card,
+                text="➕",
+                width=40,
+                height=35,
+                font=ctk.CTkFont(size=18),
+                fg_color=self.colors["accent"],
+                text_color=self.colors["bg_primary"],
+                hover_color="#e5e5e5",
+                corner_radius=8,
+                command=lambda inv_id=inv["id"], inv_name=inv["name"]: self._show_restock_popup(inv_id, inv_name)
+            )
+            restock_btn.grid(row=0, column=5, padx=30, pady=20, sticky="w")
     
     def _show_catalog_view(self):
         """
