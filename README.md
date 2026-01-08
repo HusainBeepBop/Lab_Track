@@ -327,7 +327,7 @@ See LICENSE file for details.
 
 ---
 
-*Developed by Husain Lokhandwala for the Department of Mechanical and Aerospace Engineering, IITRAM.*
+*Developed by Husain Lokhandwala and Falgun Baria for the Department of Mechanical and Aerospace Engineering, IITRAM.*
 
 **Current Version:** 10.0  
 **Last Updated:** 2024
