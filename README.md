@@ -299,6 +299,20 @@ The application uses a premium "Zinc" monochrome palette:
 - [x] Bulk CSV import
 - [x] Overdue tracking
 - [x] Global sync functionality
+- [ ] 
+- [ ] Battery Management tab
+  - Track voltage before charging and after charging
+  - Link to battery inventory using unique battery code
+  - Record which user charged the battery
+  - Charging history and voltage analytics
+- [ ] Auto sync function
+  - Automatic Supabase synchronization for immediate updates
+  - Real-time data refresh without manual sync button
+  - Background polling for database changes
+- [ ] Low stock alert system
+  - Configurable stock limit (n) for each inventory item
+  - Visual alerts when quantity falls below threshold
+  - Dashboard notifications for low stock items
 - [ ] QR Code generation for bin labels
 - [ ] Email notifications for overdue items
 - [ ] Analytics dashboard for "Most Used Components"
